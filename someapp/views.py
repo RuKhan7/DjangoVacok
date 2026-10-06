@@ -1,112 +1,289 @@
-import json
+from django.shortcuts import get_object_or_404
+from django.forms.models import model_to_dict
 from django.http import JsonResponse
+from django.views import View
 from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+from json import loads, JSONDecodeError
 from django.contrib.auth.models import User
 from .models import Habit, HabitSchedule, HabitCompletion
 from .forms import UserForm, HabitForm, HabitScheduleForm, HabitCompletionForm
 
-@csrf_exempt
-def user_list_create(request):
-    if request.method == 'GET':
-        users = User.objects.all()
-        data = [{'id': u.id, 'username': u.username, 'email': u.email} for u in users]
-        return JsonResponse(data, safe=False)
 
-    elif request.method == 'POST':
-        if request.content_type == 'application/json':
-            body = json.loads(request.body)
-            form = UserForm(body)
-        else:
-            form = UserForm(request.POST)
+# ================= USERS =================
+@method_decorator(csrf_exempt, 'dispatch')
+class UsersView(View):
+    def get(self, request):
+        users = list(User.objects.values('id', 'username', 'email'))
+        return JsonResponse({'data': users})
 
+    def post(self, request):
+        try:
+            new_data = loads(request.body)
+        except JSONDecodeError:
+            return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+        form = UserForm(new_data)
         if form.is_valid():
             user = form.save(commit=False)
-            user.set_password(form.cleaned_data['password'])
+            user.set_password(new_data['password'])
             user.save()
-            return JsonResponse({'id': user.id, 'username': user.username}, status=201)
-        return JsonResponse({'errors': form.errors}, status=400)
+            return JsonResponse(
+                {'status': 'success', 'message': 'Added!', 'id': user.pk}, status=201
+            )
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
 
 
+@method_decorator(csrf_exempt, 'dispatch')
+class UserView(View):
+    def get(self, request, id):
+        user = User.objects.values('id', 'username', 'email').get(id=id)
+        return JsonResponse({'data': user})
 
-@csrf_exempt
-def user_habits(request, user_id):
-    try:
-        user = User.objects.get(id=user_id)
-    except User.DoesNotExist:
-        return JsonResponse({'error': 'User not found'}, status=404)
+    def put(self, request, id):
+        instance = get_object_or_404(User, id=id)
+        try:
+            dict_from_request = loads(request.body)
+        except JSONDecodeError:
+            return JsonResponse({'status': 'error', 'code': 400}, status=400)
 
-    if request.method == 'GET':
-        habits = Habit.objects.filter(user=user)
-        data = [{'id': h.id, 'name': h.name, 'max_days': h.max_days} for h in habits]
-        return JsonResponse(data, safe=False)
-
-    elif request.method == 'POST':
-        if request.content_type == 'application/json':
-            body = json.loads(request.body)
-            form = HabitForm(body)
-        else:
-            form = HabitForm(request.POST)
-
+        form = UserForm(dict_from_request, instance=instance)
         if form.is_valid():
-            habit = form.save(commit=True)
+            user = form.save(commit=False)
+            if dict_from_request.get('password'):
+                user.set_password(dict_from_request['password'])
+            user.save()
+            return JsonResponse(
+                {'status': 'success', 'message': 'Changed!', 'id': user.id}, status=200
+            )
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+    def patch(self, request, id):
+        obj = get_object_or_404(User, id=id)
+        dict_from_request = loads(request.body)
+        current_data = model_to_dict(obj)
+        current_data.update(dict_from_request)
+        form = UserForm(current_data, instance=obj)
+        if form.is_valid():
+            if form.has_changed():
+                user = form.save(commit=False)
+                if dict_from_request.get('password'):
+                    user.set_password(dict_from_request['password'])
+                user.save()
+                return JsonResponse(
+                    {'status': 'success', 'message': 'Part changed!', 'id': user.id}, status=200
+                )
+            return JsonResponse({'status': 'success', 'message': 'No changes!'}, status=200)
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+    def delete(self, request, id):
+        obj = get_object_or_404(User, id=id)
+        obj.delete()
+        return JsonResponse({'status': 'success', 'message': 'deleted'}, status=200)
+
+
+# ================= HABITS =================
+@method_decorator(csrf_exempt, 'dispatch')
+class UserHabitsView(View):
+    def get(self, request, user_id):
+        habits = list(Habit.objects.filter(user_id=user_id).values(
+            'id', 'name', 'max_days', 'created_at'
+        ))
+        return JsonResponse({'data': habits})
+
+    def post(self, request, user_id):
+        user = get_object_or_404(User, id=user_id)
+        try:
+            new_data = loads(request.body)
+        except JSONDecodeError:
+            return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+        form = HabitForm(new_data)
+        if form.is_valid():
+            habit = form.save(commit=False)
             habit.user = user
             habit.save()
-            return JsonResponse({'id': habit.id, 'name': habit.name}, status=201)
+            return JsonResponse(
+                {'status': 'success', 'message': 'Added!', 'id': habit.pk}, status=201
+            )
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
 
-        return JsonResponse({'errors': form.errors}, status=400)
+
+@method_decorator(csrf_exempt, 'dispatch')
+class HabitView(View):
+    def get(self, request, id):
+        habit = Habit.objects.values('id', 'name', 'max_days', 'user').get(id=id)
+        return JsonResponse({'data': habit})
+
+    def put(self, request, id):
+        instance = get_object_or_404(Habit, id=id)
+        try:
+            dict_from_request = loads(request.body)
+        except JSONDecodeError:
+            return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+        form = HabitForm(dict_from_request, instance=instance)
+        if form.is_valid():
+            habit = form.save()
+            return JsonResponse(
+                {'status': 'success', 'message': 'Changed!', 'id': habit.id}, status=200
+            )
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+    def patch(self, request, id):
+        obj = get_object_or_404(Habit, id=id)
+        dict_from_request = loads(request.body)
+        current_data = model_to_dict(obj)
+        current_data.update(dict_from_request)
+        form = HabitForm(current_data, instance=obj)
+        if form.is_valid():
+            if form.has_changed():
+                habit = form.save()
+                return JsonResponse(
+                    {'status': 'success', 'message': 'Part changed!', 'id': habit.id}, status=200
+                )
+            return JsonResponse({'status': 'success', 'message': 'No changes!'}, status=200)
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+    def delete(self, request, id):
+        obj = get_object_or_404(Habit, id=id)
+        obj.delete()
+        return JsonResponse({'status': 'success', 'message': 'deleted'}, status=200)
 
 
-@csrf_exempt
-def habit_schedule(request, habit_id):
-    try:
-        habit = Habit.objects.get(id=habit_id)
-    except Habit.DoesNotExist:
-        return JsonResponse({'error': 'Habit not found'}, status=404)
+# ================= SCHEDULES =================
+@method_decorator(csrf_exempt, 'dispatch')
+class HabitSchedulesView(View):
+    def get(self, request, habit_id):
+        schedules = list(HabitSchedule.objects.filter(habit_id=habit_id).values(
+            'id', 'time', 'times_per_day'
+        ))
+        return JsonResponse({'data': schedules})
 
-    if request.method == 'GET':
-        schedules = HabitSchedule.objects.filter(habit=habit)
-        data = [{'id': s.id, 'time': str(s.time), 'times_per_day': s.times_per_day} for s in schedules]
-        return JsonResponse(data, safe=False)
+    def post(self, request, habit_id):
+        habit = get_object_or_404(Habit, id=habit_id)
+        try:
+            new_data = loads(request.body)
+        except JSONDecodeError:
+            return JsonResponse({'status': 'error', 'code': 400}, status=400)
 
-    elif request.method == 'POST':
-        if request.content_type == 'application/json':
-            body = json.loads(request.body)
-            form = HabitScheduleForm(body)
-        else:
-            form = HabitScheduleForm(request.POST)
-
+        form = HabitScheduleForm(new_data)
         if form.is_valid():
             schedule = form.save(commit=False)
             schedule.habit = habit
             schedule.save()
-            return JsonResponse({'id': schedule.id, 'time': str(schedule.time)}, status=201)
+            return JsonResponse(
+                {'status': 'success', 'message': 'Added!', 'id': schedule.pk}, status=201
+            )
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
 
-        return JsonResponse({'errors': form.errors}, status=400)
+
+@method_decorator(csrf_exempt, 'dispatch')
+class HabitScheduleView(View):
+    def get(self, request, id):
+        schedule = HabitSchedule.objects.values('id', 'time', 'times_per_day', 'habit').get(id=id)
+        return JsonResponse({'data': schedule})
+
+    def put(self, request, id):
+        instance = get_object_or_404(HabitSchedule, id=id)
+        try:
+            dict_from_request = loads(request.body)
+        except JSONDecodeError:
+            return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+        form = HabitScheduleForm(dict_from_request, instance=instance)
+        if form.is_valid():
+            schedule = form.save()
+            return JsonResponse(
+                {'status': 'success', 'message': 'Changed!', 'id': schedule.id}, status=200
+            )
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+    def patch(self, request, id):
+        obj = get_object_or_404(HabitSchedule, id=id)
+        dict_from_request = loads(request.body)
+        current_data = model_to_dict(obj)
+        current_data.update(dict_from_request)
+        form = HabitScheduleForm(current_data, instance=obj)
+        if form.is_valid():
+            if form.has_changed():
+                schedule = form.save()
+                return JsonResponse(
+                    {'status': 'success', 'message': 'Part changed!', 'id': schedule.id}, status=200
+                )
+            return JsonResponse({'status': 'success', 'message': 'No changes!'}, status=200)
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+    def delete(self, request, id):
+        obj = get_object_or_404(HabitSchedule, id=id)
+        obj.delete()
+        return JsonResponse({'status': 'success', 'message': 'deleted'}, status=200)
 
 
-@csrf_exempt
-def habit_completions(request, habit_id):
-    try:
-        habit = Habit.objects.get(id=habit_id)
-    except Habit.DoesNotExist:
-        return JsonResponse({'error': 'Habit not found'}, status=404)
+# ================= COMPLETIONS =================
+@method_decorator(csrf_exempt, 'dispatch')
+class HabitCompletionsView(View):
+    def get(self, request, habit_id):
+        completions = list(HabitCompletion.objects.filter(habit_id=habit_id).values(
+            'id', 'completed', 'count'
+        ))
+        return JsonResponse({'data': completions})
 
-    if request.method == 'GET':
-        completions = HabitCompletion.objects.filter(habit=habit)
-        data = [{'id': c.id, 'completed': c.completed, 'count': c.count} for c in completions]
-        return JsonResponse(data, safe=False)
+    def post(self, request, habit_id):
+        habit = get_object_or_404(Habit, id=habit_id)
+        try:
+            new_data = loads(request.body)
+        except JSONDecodeError:
+            return JsonResponse({'status': 'error', 'code': 400}, status=400)
 
-    elif request.method == 'POST':
-        if request.content_type == 'application/json':
-            body = json.loads(request.body)
-            form = HabitCompletionForm(body)
-        else:
-            form = HabitCompletionForm(request.POST)
-
+        form = HabitCompletionForm(new_data)
         if form.is_valid():
             completion = form.save(commit=False)
             completion.habit = habit
             completion.save()
-            return JsonResponse({'id': completion.id, 'completed': completion.completed}, status=201)
+            return JsonResponse(
+                {'status': 'success', 'message': 'Added!', 'id': completion.pk}, status=201
+            )
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
 
-        return JsonResponse({'errors': form.errors}, status=400)
+
+@method_decorator(csrf_exempt, 'dispatch')
+class HabitCompletionView(View):
+    def get(self, request, id):
+        completion = HabitCompletion.objects.values('id', 'completed', 'count', 'habit').get(id=id)
+        return JsonResponse({'data': completion})
+
+    def put(self, request, id):
+        instance = get_object_or_404(HabitCompletion, id=id)
+        try:
+            dict_from_request = loads(request.body)
+        except JSONDecodeError:
+            return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+        form = HabitCompletionForm(dict_from_request, instance=instance)
+        if form.is_valid():
+            completion = form.save()
+            return JsonResponse(
+                {'status': 'success', 'message': 'Changed!', 'id': completion.id}, status=200
+            )
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+    def patch(self, request, id):
+        obj = get_object_or_404(HabitCompletion, id=id)
+        dict_from_request = loads(request.body)
+        current_data = model_to_dict(obj)
+        current_data.update(dict_from_request)
+        form = HabitCompletionForm(current_data, instance=obj)
+        if form.is_valid():
+            if form.has_changed():
+                completion = form.save()
+                return JsonResponse(
+                    {'status': 'success', 'message': 'Part changed!', 'id': completion.id}, status=200
+                )
+            return JsonResponse({'status': 'success', 'message': 'No changes!'}, status=200)
+        return JsonResponse({'status': 'error', 'code': 400}, status=400)
+
+    def delete(self, request, id):
+        obj = get_object_or_404(HabitCompletion, id=id)
+        obj.delete()
+        return JsonResponse({'status': 'success', 'message': 'deleted'}, status=200)
